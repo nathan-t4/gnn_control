@@ -1,0 +1,7 @@
+build/
+env/
+py311/
+*.egg-info
+__pycache__
+log/
+results/
