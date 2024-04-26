@@ -5,6 +5,8 @@ import numpy as np
 import ml_collections
 from jax.tree_util import register_pytree_node_class
 from typing import Sequence
+from functools import partial
+from control import dlqr
 from utils.graph_utils import add_edges
 
 class GraphBuilder():
@@ -195,30 +197,152 @@ class MSDGraphBuilder(GraphBuilder):
         obj._setup_graph_params()
         return obj
     
-# @register_pytree_node_class
-class PowerNetworkGraphBuilder(GraphBuilder):
-    def __init__(self, path, add_undirected_edges, add_self_loops):
-        super().__init__(path, add_undirected_edges, add_self_loops)
-
+@register_pytree_node_class
+class DelayStructureGraphBuilder(GraphBuilder):
+    def __init__(
+            self, path, seed, alpha, dt, m, noise_std, num_initial_states, senders, receivers
+        ):
+        self.seed = seed
+        self.alpha = alpha
+        self.dt = dt
+        self.m = m
+        self.noise_std = noise_std
+        self.num_initial_states = num_initial_states
+        self.senders = senders
+        self.receivers = receivers
+        super().__init__(path, add_undirected_edges=False, add_self_loops=True)
+    
     def _load_data(self, path):
-        return super()._load_data(path)
-    
+        A_11 = jnp.array([[1, self.dt], [0, 1]])
+        A_ii = jnp.array([[1, self.dt], [self.alpha * self.dt / self.m, 1]]) # i = 2,3,4,5
+        A_ij = jnp.array([[0, 0], [-self.alpha * self.dt / self.m, 0]]) # i = 2,3,4,5; j = i-1
+        B_ii = jnp.array([[0, 0], [0, self.dt / self.m]]) # i = 1,2,3,4,5
+
+        zeros = jnp.zeros((2,2))
+
+        self.A = jnp.block([[A_11, zeros, zeros, zeros, zeros], 
+                            [A_ij, A_ii, zeros, zeros, zeros],
+                            [zeros, A_ij, A_ii, zeros, zeros],
+                            [zeros, zeros, A_ij, A_ii, zeros],
+                            [zeros, zeros, zeros, A_ij, A_ii]])
+        
+        self.B = jnp.block([[B_ii, zeros, zeros, zeros, zeros],
+                            [zeros, B_ii, zeros, zeros, zeros],
+                            [zeros, zeros, B_ii, zeros, zeros],
+                            [zeros, zeros, zeros, B_ii, zeros],
+                            [zeros, zeros, zeros, zeros, B_ii]])
+        
+        self.state_dim = len(self.A)
+        self.num_vehicles = self.state_dim // 2
+
+        self.Q = jnp.eye(self.state_dim)
+        self.R = 0.1 * jnp.eye(self.num_vehicles)
+
+        self.K, self.S, _ = dlqr(self.A, self.B, self.Q, 0.1 * jnp.eye(self.state_dim)) # TODO 
+        
+        # When x > 0, 1 > 2 > 3 > 4 > 5
+        def random_initial_state(_, key):
+            signs = jax.random.choice(key, jnp.array([-1, 1]), shape=(self.state_dim,))
+            # pos_w_noise = sign * 0.5 * (jnp.arange(self.num_vehicles) + jax.random.normal(key, shape=(self.num_vehicles,)))
+            # vel_w_noise = sign * 0.5 * (jnp.zeros(self.num_vehicles) + jax.random.normal(key, shape=(self.num_vehicles,))) 
+            
+            state0 = 0.5 * signs * (jnp.array([1, 0, 2, 0, 3, 0, 4, 0, 5, 0]) \
+                                  + jax.random.normal(key, shape=(self.state_dim,)))
+            
+            return _, state0
+        
+        key = jax.random.key(self.seed) # update key?
+        keys = jax.random.split(key, self.num_initial_states)
+        _, initial_states = jax.lax.scan(random_initial_state, None, keys)
+        
+        self.initial_states = jnp.array(initial_states)
+
     def _get_norm_stats(self):
-        return super()._get_norm_stats()
-    
-    def _setup_graph_params():
+        """ TODO """
         pass
     
-    def get_graph(self, **kwargs) -> jraph.GraphsTuple:
-        return super().get_graph(**kwargs)
+    def dynamics_function(self, state, inputs):
+        key, control = inputs
+        D = self.noise_std * jax.random.normal(key,(self.num_vehicles,))
+        w = self.dt / self.m * jnp.array([0, D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4]])
+        next_state = self.A @ state + self.B @ control + w
+        return next_state, (next_state, control)
     
-    def get_graph_batch(self, **kwargs) -> Sequence[jraph.GraphsTuple]:
-        return super().get_graph_batch(**kwargs)
+    def get_state_trajectory(self, key, state_0, controls, timesteps):
+        # optimal control only depends on state
+        keys = jax.random.split(key, timesteps)
+        stateT, outputs = jax.lax.scan(self.dynamics_function, state_0, (keys, controls))
+        states = jnp.array(outputs[0])
+        # states = jnp.concatenate((state_0.reshape(1,-1), states))
+        controls = jnp.array(outputs[1])
+
+        return states, controls
     
-    def tree_flatten():
-        pass
+    def optimal_dynamics_function(self, state, key):
+        D = self.noise_std * jax.random.normal(key, (self.num_vehicles,))
+        w = self.dt / self.m * jnp.array([0, D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4]])
+        control = -self.K @ state
+        next_state = self.A @ state + self.B @ control + w
+        return next_state, (next_state, control)
+    
+    def get_optimal_state_trajectory(self, key, state_0, timesteps):
+        # optimal control only depends on state
+        keys = jax.random.split(key, timesteps)
+        state_T, outputs = jax.lax.scan(self.optimal_dynamics_function, state_0, keys) 
+        states = jnp.array(outputs[0])
+        # states = jnp.concatenate((state_0.reshape(1,-1), states))
+        controls = jnp.array(outputs[1])
+
+        return states, controls
+    
+    def _setup_graph_params(self):
+        self.n_node = jnp.floor_divide(jnp.array([len(self.A)]), jnp.array(2))
+        self.n_edge = self.n_node - 1
+    
+    def get_graph(self, state: jnp.array) -> jraph.GraphsTuple:
+        """ Return a graph with node features being [x(k), u(k)] """
+        nodes = state.reshape((5,-1)) # state should have shape (5, 2)
+        edges = None
+        globals = None
+        graph = jraph.GraphsTuple(nodes=nodes,
+                                  edges=edges,
+                                  globals=globals,
+                                  senders=self.senders,
+                                  receivers=self.receivers,
+                                  n_node=self.n_node,
+                                  n_edge=self.n_edge)
+        return graph
+    
+    def get_graph_batch(self, states) -> Sequence[jraph.GraphsTuple]:
+        def f(carry, idx):
+            return carry, self.get_graph(idx)
+        
+        _, graphs = jax.lax.scan(f, None, states)
+        
+        return graphs
+    
+    def tree_flatten(self):
+        children = () # dynamic
+        aux_data = (self.seed, self._add_undirected_edges, self._add_self_loops, self.A, self.B, self.Q, self.R, self.K, self.S, self.initial_states, self.num_initial_states, self.state_dim, self.num_vehicles) # static
+        return (children, aux_data)
     
     @classmethod
-    def tree_unflatten():
-        pass
+    def tree_unflatten(cls, aux_data, children):
+        del children
+        obj = object.__new__(DelayStructureGraphBuilder)
+        obj.seed                    = aux_data[0]
+        obj._add_undirected_edges   = aux_data[1]
+        obj._add_self_loops         = aux_data[2]
+        obj.A                       = aux_data[3]
+        obj.B                       = aux_data[4]
+        obj.Q                       = aux_data[5]
+        obj.R                       = aux_data[6]
+        obj.K                       = aux_data[7]
+        obj.S                       = aux_data[8]
+        obj.initial_states          = aux_data[9]
+        obj.num_initial_states      = aux_data[10]
+        obj.state_dim               = aux_data[11]
+        obj.num_vehicles            = aux_data[12]
+        obj._setup_graph_params()
+        return obj
     

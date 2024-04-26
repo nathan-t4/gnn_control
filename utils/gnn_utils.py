@@ -19,7 +19,7 @@ def add_prefix_to_keys(result: Dict[str, Any], prefix: str) -> Dict[str, Any]:
   return {f'{prefix}_{key}': val for key, val in result.items()}
 
 def plot_evaluation_curves(
-        ts, pred_data, exp_data, aux_data, prefix, plot_dir, prediction='acceleration', show=False
+        ts, pred_data, exp_data, aux_data, prefix, plot_dir, prediction='control', show=False
     ):
     if not os.path.isdir(plot_dir):
         os.makedirs(plot_dir)
@@ -75,31 +75,49 @@ def plot_evaluation_curves(
             if show: plt.show()
             plt.close()
     
-    elif prediction == 'position':
-        fig, ax1 = plt.subplots(1)
+    elif prediction == 'control':
+        predicted_state = (pred_data[0]).squeeze()
+        predicted_control = pred_data[1]
+        expected_state = exp_data[0]
+        expected_control = exp_data[1]
 
-        ax1.set_title('Position')
-        ax1.plot(ts, exp_data - pred_data, label=[f'Mass {i}' for i in range(2)])
-        ax1.set_xlabel('Time [$s$]')
-        ax1.set_ylabel(r'Position error [$\mu m$]')
+        # plot state & control for both 1. predicted 2. expected
+        fig, (ax1, ax2) = plt.subplots(2,1)
+        fig.suptitle('Predicted using Graph Network')
+        ax1.set_title(f'Position')
+        ax1.plot(ts, predicted_state[:,::2], label=['1','2','3','4','5'])
+        ax1.set_xlabel(r'$t$ [$s$]')
+        ax1.set_ylabel(r'$x$ [$m$]')
         ax1.legend()
+
+        ax2.set_title(f'Control')
+        ax2.plot(ts, predicted_control, label=['1','2','3','4','5'])
+        ax2.set_xlabel(r'$t$ [$s$]')
+        ax2.set_ylabel(r'$u$ [$N$]')
+        ax2.legend()
+
         plt.tight_layout()
-        fig.savefig(os.path.join(plot_dir, f'{prefix}_error.png'))
-        plt.show() if show else plt.close()
+        plt.savefig(os.path.join(plot_dir, f'{prefix}_predicted.png'))
+        if show: plt.show()
+        plt.close()
 
-        for i in range(2):
-            fig, ax1 = plt.subplots(1)
-            fig.suptitle(f'{prefix}: Mass {i}')
-            ax1.set_title(f'Position')
-            ax1.plot(ts, pred_data[:,i], label='predicted')
-            ax1.plot(ts, exp_data[:,i], label='expected')
-            ax1.set_xlabel('Time [$s$]')
-            ax1.set_ylabel(r'Position [$\mu m$]')
-            ax1.legend()
+        fig, (ax1, ax2) = plt.subplots(2,1)
+        fig.suptitle('Optimal State Feedback')
+        ax1.set_title(f'Position')
+        ax1.plot(ts, expected_state[:,::2], label=['1','2','3','4','5'])
+        ax1.set_xlabel(r'$t$ [$s$]')
+        ax1.set_ylabel(r'$x$ [$m$]')
+        ax1.legend()
 
-            plt.tight_layout()
-            plt.savefig(os.path.join(plot_dir, f'{prefix}_mass{i}.png'))
-            if show: plt.show()
-            plt.close()
+        ax2.set_title(f'Control')
+        ax2.plot(ts, expected_control[:,1::2], label=['1','2','3','4','5'])
+        ax2.set_xlabel(r'$t$ [$s$]')
+        ax2.set_ylabel(r'$u$ [$\mu m/s^2$]')
+        ax2.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, f'{prefix}_expected.png'))
+        if show: plt.show()
+        plt.close()
         
     plt.close()

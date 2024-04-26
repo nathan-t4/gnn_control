@@ -1,0 +1,10 @@
+[project]
+name = "gnc"
+version = "0.0.1"
+description = "Graph Neural Network Controller"
+readme = "README.md"
+# license = {file = "LICENSE.txt"}
+requires-python=">=3.8"
+
+[tool.setuptools.packages.find]
+exclude = ["results*"]

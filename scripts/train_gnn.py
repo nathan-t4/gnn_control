@@ -198,13 +198,25 @@ def train(config: ml_collections.ConfigDict):
                 pred_graphs = state.apply_fn(params, batch_graphs, batch_control, net_rng, rngs={'dropout': dropout_rng})
                 predictions = pred_graphs.nodes[:,:,-1] 
                 loss = int(1e6) * optax.l2_loss(predictions=predictions, targets=batch_targets).mean()
-            if training_params.loss_function == 'state':
+            elif training_params.loss_function == 'state':
                 batch_pos, batch_vel, batch_control = batch_data
                 pred_graphs = state.apply_fn(params, batch_graphs, batch_control, net_rng, rngs={'dropout': dropout_rng})
                 pos_predictions = pred_graphs.nodes[:,:,0]
                 vel_predictions = pred_graphs.nodes[:,:,net_params.vel_history]
                 loss = int(1e6) * (optax.l2_loss(predictions=pos_predictions, targets=batch_pos).mean() \
                      + optax.l2_loss(predictions=vel_predictions, targets=batch_vel).mean())
+            elif training_params.loss_function == 'quadratic_loss':
+                batch_pos, batch_vel, batch_control = batch_data # previous x, u?
+                pred_graphs = state.apply_fn(params, batch_graphs, batch_control, net_rng, rngs={'dropout': dropout_rng})
+                control_predictions = pred_graphs.nodes[:,:,-1]
+                state_predictions = jnp.column_stack(
+                    (pred_graphs.nodes[:,:,0], pred_graphs.nodes[:,:,net_params.vel_history])
+                )
+                # TODO: dimensions of Q and R
+                Q = jnp.eye(N)
+                R = jnp.eye(M)
+                loss = state_predictions.T @ Q @ state_predictions \
+                     + control_predictions.T @ R @ control_predictions
             elif training_params.loss_function == 'position':
                 # TODO
                 pass
