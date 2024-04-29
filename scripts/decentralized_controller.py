@@ -33,7 +33,7 @@ Q = np.eye(10)
 R = 0.1 * np.eye(10)
 
 # assume p0 = [1,2,3,4,5] * 10000 and v0 = [0, 0, 0, 0, 0]
-x0 = np.array([1, 0, 2, 0, 3, 0, 4, 0, 5, 0]) * 10000
+x0 = np.array([1, 0, 2, 0, 3, 0, 4, 0, 5, 0])
 
 def platoon_dynamics():
     K, S, E = dlqr(A, B, Q, R) # Solve discrete-time LQR
@@ -41,7 +41,7 @@ def platoon_dynamics():
     def dynamics_part_a(x):
         """ Simulate closed-loop dynamics for part a"""
         D = np.random.normal(loc=0, scale=10000, size=5)
-        w = np.zeros((10, 1))
+        w = np.zeros((10,))
         w[::2] = dt * D / m
         return (A - B @ K) @ x + w # u = -K x 
     
@@ -88,14 +88,16 @@ def platoon_comm_delay():
         v = np.array(v) - 1 # e.g. v = [3,4,5] -> v = [2,3,4]
         r = np.array(r) - 1
         v_transform = []
-        for i in range(len(v)):
+        for v_i in v:
             # e.g. v = [0,2] -> v_transform = [0,1,4,5]
-            v_transform.append(2 * v[i])
-            v_transform.append(2 * v[i] + 1)
+            v_transform.append(2 * v_i)
+            v_transform.append(2 * v_i + 1)
         r_transform = []
-        for i in range(len(r)):
-            r_transform.append(2 * r[i])
-            r_transform.append(2 * r[i] + 1)
+        for r_i in r:
+            r_transform.append(2 * r_i)
+            r_transform.append(2 * r_i + 1)
+
+        print(v, v_transform, r, r_transform)
         
         A_vr = A[np.ix_(v_transform,r_transform)]
         B_vr = B[np.ix_(v_transform,r_transform)]
@@ -176,9 +178,10 @@ def platoon_comm_delay():
     print('Minimum cost J delay:', J_delay)
 
     sim_cost = 0
-    for x, u in zip(xs.T, F.T):
+    for x, u in zip(xs.T, us.T):
         sim_cost += (1 / ts) * (x.T @ Q @ x + u.T @ R @ u)
     print('Simulated cost:', sim_cost)
 
 if __name__ == '__main__':
-    data = platoon_dynamics()
+    # data = platoon_dynamics()
+    platoon_comm_delay()

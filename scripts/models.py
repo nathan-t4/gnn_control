@@ -42,12 +42,13 @@ class GraphNetworkSimulator(nn.Module):
         EncodeProcessDecode GN 
     """
     system_params: FrozenConfigDict
+    norm_stats: FrozenConfigDict
 
     num_mp_steps: int = 1
     layer_norm: bool = False
     use_edge_model: bool = False
     shared_params: bool = False
-    vel_history: int = 5
+    vel_history: int = 1
     control_history: int = 1
     noise_std: float = 0.0003
 
@@ -167,7 +168,9 @@ class GraphNetworkSimulator(nn.Module):
             next_edges = None
            
             if self.prediction == 'control':
-                next_control = graph.nodes # TODO: is this normalized?
+                next_control = graph.nodes
+                next_control = self.norm_stats.control.mean + self.norm_stats.control.std * next_control
+
                 def platoon_dynamics_function(state, control):
                     state = state.flatten()
                     # reconstructed_control = np.zeros(10)
@@ -200,7 +203,7 @@ class GraphNetworkSimulator(nn.Module):
                                    [zeros, zeros, zeros, zeros, B_ii]])
                     
                     D = noise_std * jax.random.normal(rng,(5,))
-                    w = dt / m * jnp.array([D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4], 0])
+                    w = dt / m * jnp.array([0, D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4]])
                     next_state = A @ state + B @ reconstructed_control + w
 
                     return next_state

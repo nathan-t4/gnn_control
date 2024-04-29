@@ -198,7 +198,7 @@ class MSDGraphBuilder(GraphBuilder):
         return obj
     
 @register_pytree_node_class
-class DelayStructureGraphBuilder(GraphBuilder):
+class VehiclePlatoonGraphBuilder(GraphBuilder):
     def __init__(
             self, path, seed, alpha, dt, m, noise_std, num_initial_states, senders, receivers
         ):
@@ -233,44 +233,52 @@ class DelayStructureGraphBuilder(GraphBuilder):
                             [zeros, zeros, zeros, zeros, B_ii]])
         
         self.state_dim = len(self.A)
-        self.num_vehicles = self.state_dim // 2
+        self.num_nodes = self.state_dim // 2
 
         self.Q = jnp.eye(self.state_dim)
-        self.R = 0.1 * jnp.eye(self.num_vehicles)
+        self.R = 0.1 * jnp.eye(self.num_nodes)
 
         self.K, self.S, _ = dlqr(self.A, self.B, self.Q, 0.1 * jnp.eye(self.state_dim)) # TODO 
         
         # When x > 0, 1 > 2 > 3 > 4 > 5
         def random_initial_state(_, key):
-            signs = jax.random.choice(key, jnp.array([-1, 1]), shape=(self.state_dim,))
-            # pos_w_noise = sign * 0.5 * (jnp.arange(self.num_vehicles) + jax.random.normal(key, shape=(self.num_vehicles,)))
-            # vel_w_noise = sign * 0.5 * (jnp.zeros(self.num_vehicles) + jax.random.normal(key, shape=(self.num_vehicles,))) 
-            
+            signs = jax.random.choice(key, jnp.array([-1, 1]), shape=(self.num_nodes+1,))
+            signs = jnp.array([signs[0], signs[1], signs[0], signs[2], signs[0], signs[3], signs[0], signs[4], signs[0], signs[5]])            
             state0 = 0.5 * signs * (jnp.array([1, 0, 2, 0, 3, 0, 4, 0, 5, 0]) \
                                   + jax.random.normal(key, shape=(self.state_dim,)))
             
             return _, state0
         
-        key = jax.random.key(self.seed) # update key?
+        key = jax.random.key(self.seed)
         keys = jax.random.split(key, self.num_initial_states)
         _, initial_states = jax.lax.scan(random_initial_state, None, keys)
         
         self.initial_states = jnp.array(initial_states)
 
     def _get_norm_stats(self):
-        """ TODO """
-        pass
+        num_timesteps = 100
+        key = jax.random.key(self.seed)
+        keys = jax.random.split(key, self.num_initial_states)
+        _, controls = jax.vmap(self.get_optimal_state_trajectory, in_axes=(0,0,None))(keys, self.initial_states, num_timesteps)
+
+        norm_stats = ml_collections.ConfigDict()
+        norm_stats.control = ml_collections.ConfigDict({
+            'mean': jnp.mean(controls),
+            'std': jnp.std(controls)
+        })
+
+        self.norm_stats = norm_stats
     
     def dynamics_function(self, state, inputs):
         key, control = inputs
-        D = self.noise_std * jax.random.normal(key,(self.num_vehicles,))
+        D = self.noise_std * jax.random.normal(key,(self.num_nodes,))
         w = self.dt / self.m * jnp.array([0, D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4]])
         next_state = self.A @ state + self.B @ control + w
         return next_state, (next_state, control)
     
-    def get_state_trajectory(self, key, state_0, controls, timesteps):
+    def get_state_trajectory(self, key, state_0, controls, num_timesteps):
         # optimal control only depends on state
-        keys = jax.random.split(key, timesteps)
+        keys = jax.random.split(key, num_timesteps)
         stateT, outputs = jax.lax.scan(self.dynamics_function, state_0, (keys, controls))
         states = jnp.array(outputs[0])
         # states = jnp.concatenate((state_0.reshape(1,-1), states))
@@ -279,15 +287,15 @@ class DelayStructureGraphBuilder(GraphBuilder):
         return states, controls
     
     def optimal_dynamics_function(self, state, key):
-        D = self.noise_std * jax.random.normal(key, (self.num_vehicles,))
+        D = self.noise_std * jax.random.normal(key, (self.num_nodes,))
         w = self.dt / self.m * jnp.array([0, D[0], 0, D[1], 0, D[2], 0, D[3], 0, D[4]])
         control = -self.K @ state
         next_state = self.A @ state + self.B @ control + w
         return next_state, (next_state, control)
     
-    def get_optimal_state_trajectory(self, key, state_0, timesteps):
+    def get_optimal_state_trajectory(self, key, state_0, num_timesteps):
         # optimal control only depends on state
-        keys = jax.random.split(key, timesteps)
+        keys = jax.random.split(key, num_timesteps)
         state_T, outputs = jax.lax.scan(self.optimal_dynamics_function, state_0, keys) 
         states = jnp.array(outputs[0])
         # states = jnp.concatenate((state_0.reshape(1,-1), states))
@@ -296,12 +304,12 @@ class DelayStructureGraphBuilder(GraphBuilder):
         return states, controls
     
     def _setup_graph_params(self):
-        self.n_node = jnp.floor_divide(jnp.array([len(self.A)]), jnp.array(2))
+        self.n_node = jnp.array([self.num_nodes])
         self.n_edge = self.n_node - 1
     
     def get_graph(self, state: jnp.array) -> jraph.GraphsTuple:
         """ Return a graph with node features being [x(k), u(k)] """
-        nodes = state.reshape((5,-1)) # state should have shape (5, 2)
+        nodes = state.reshape((self.num_nodes,-1))
         edges = None
         globals = None
         graph = jraph.GraphsTuple(nodes=nodes,
@@ -323,13 +331,13 @@ class DelayStructureGraphBuilder(GraphBuilder):
     
     def tree_flatten(self):
         children = () # dynamic
-        aux_data = (self.seed, self._add_undirected_edges, self._add_self_loops, self.A, self.B, self.Q, self.R, self.K, self.S, self.initial_states, self.num_initial_states, self.state_dim, self.num_vehicles) # static
+        aux_data = (self.seed, self._add_undirected_edges, self._add_self_loops, self.A, self.B, self.Q, self.R, self.K, self.S, self.initial_states, self.num_initial_states, self.state_dim, self.num_nodes, self.norm_stats) # static
         return (children, aux_data)
     
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         del children
-        obj = object.__new__(DelayStructureGraphBuilder)
+        obj = object.__new__(VehiclePlatoonGraphBuilder)
         obj.seed                    = aux_data[0]
         obj._add_undirected_edges   = aux_data[1]
         obj._add_self_loops         = aux_data[2]
@@ -342,7 +350,8 @@ class DelayStructureGraphBuilder(GraphBuilder):
         obj.initial_states          = aux_data[9]
         obj.num_initial_states      = aux_data[10]
         obj.state_dim               = aux_data[11]
-        obj.num_vehicles            = aux_data[12]
+        obj.num_nodes               = aux_data[12]
+        obj.norm_states             = aux_data[13]
         obj._setup_graph_params()
         return obj
     
