@@ -7,8 +7,8 @@ def create_gnc_config(args) -> ml_collections.ConfigDict:
         'dt': 0.1, # [s]
         'm': 1500, # [kg]
         'alpha': 50, # [N/m]
-        'noise_std': 1000, # changed from 10000
-        'timesteps': 100,
+        'noise_std': 10000,
+        'timesteps': 400,
     })
     config.training_params = ml_collections.ConfigDict({
         'net_name': 'GNS',
@@ -16,7 +16,7 @@ def create_gnc_config(args) -> ml_collections.ConfigDict:
         'seed': 0,
         'horizon': 20, # horizon for training
         'trial_name': 'gnc',
-        'loss_function': 'supervised',
+        'loss_function': 'quadratic_loss',
         'num_epochs': int(50),
         'min_epochs': int(50),
         'batch_size': 2,
@@ -35,7 +35,7 @@ def create_gnc_config(args) -> ml_collections.ConfigDict:
         'prediction': 'control',
         # 'vel_history': 5,
         # 'control_history': 5,
-        'num_mp_steps': 4, # must =1
+        'num_mp_steps': 4,
         # 'noise_std': 0.0003,
         'latent_size': 16,
         'hidden_layers': 2,

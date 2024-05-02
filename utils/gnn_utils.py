@@ -112,7 +112,7 @@ def plot_evaluation_curves(
         ax2.set_title(f'Control')
         ax2.plot(ts, expected_control[:,1::2], label=['1','2','3','4','5'])
         ax2.set_xlabel(r'$t$ [$s$]')
-        ax2.set_ylabel(r'$u$ [$\mu m/s^2$]')
+        ax2.set_ylabel(r'$u$ [$N$]')
         ax2.legend()
 
         plt.tight_layout()

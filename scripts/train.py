@@ -52,7 +52,7 @@ def train(config: ml_collections.ConfigDict):
                                     system_params.dt,
                                     system_params.m,
                                     system_params.noise_std,
-                                    int(5e5),
+                                    int(1e5),
                                     jnp.array([0,1,2,3]),
                                     jnp.array([1,2,3,4]))  
     
@@ -353,6 +353,10 @@ def eval(config: ml_collections.ConfigDict):
         ts = tf_idxs * system_params.dt
 
         state_targets, control_targets = gb.get_optimal_state_trajectory(key, x0, num_ts)
+        optimal_loss = state_targets @ gb.Q @ state_targets.T \
+                     + control_targets @ (0.1 * jnp.eye(gb.state_dim)) @ control_targets.T
+        optimal_loss = jnp.sum(optimal_loss)
+
         graph0 = gb.get_graph(x0)
         # graph0 = pytrees_stack([graph0])
         keys = jax.random.split(key, num_ts)
@@ -387,7 +391,7 @@ def eval(config: ml_collections.ConfigDict):
         pred_data = pred_data
         total_loss = jnp.sum(losses)
         
-        return ts, pred_data, exp_data, EvalMetrics.single_from_model_output(loss=total_loss)
+        return ts, pred_data, exp_data, EvalMetrics.single_from_model_output(loss=total_loss), EvalMetrics.single_from_model_output(loss=optimal_loss)
 
     # # Create evaluation network
     # eval_net = create_net(net_params)
@@ -408,34 +412,39 @@ def eval(config: ml_collections.ConfigDict):
     training_params.num_epochs = final_epoch
 
 
-    min_error = jnp.inf
-    print("Start training")
+    print("Start evaluation")
 
     eval_metrics = None
     net.training = False
     rollout_error_sum = 0
+    rollout_optimal_error_sum = 0
     for i in range(len(eval_gb.initial_states)):
         key, eval_key = jax.random.split(key)
-        ts, pred_data, exp_data, eval_metrics = rollout(state, eval_gb.initial_states[i], eval_key)
+        ts, pred_data, exp_data, eval_metrics, optimal_loss = rollout(state, eval_gb.initial_states[i], eval_key)
         rollout_error_sum += eval_metrics.compute()['loss']
+        rollout_optimal_error_sum += optimal_loss.compute()['loss']
         writer.write_scalars(i, add_prefix_to_keys({'loss': eval_metrics.compute()['loss']}, f'eval_{training_params.trial_name}'))
         plot_evaluation_curves(ts, pred_data, exp_data, None,
                                 plot_dir=eval_plot_dir,
                                 prefix=f'eval_traj_{i}')
     
     mean_loss = rollout_error_sum / eval_gb.num_initial_states
-    print(f'Rollout mean position loss = {jnp.round(mean_loss, 4)}')
+    mean_optimal_loss = rollout_optimal_error_sum / eval_gb.num_initial_states
+
+    print(f'Mean rollout loss = {jnp.round(mean_loss, 4)}')
+    print(f'Mean optimal loss = {jnp.round(mean_optimal_loss, 4)}')
 
     # Save config to json
-    eval_metrics = {
-        'mean_rollout_error': mean_loss,
+    eval_config = ml_collections.ConfigDict({
+        'mean_rollout_loss': mean_loss,
+        'mean_optimal_loss': mean_optimal_loss,
         'system_params': system_params,
-    }
+    })
 
-    config_js = config.to_json_best_effort()
+    eval_config_js = eval_config.to_json_best_effort()
     run_params_file = os.path.join(training_params.dir, f'eval_{training_params.trial_name}_params.js')
     with open(run_params_file, "w") as outfile:
-        json.dump(config_js, outfile)
+        json.dump(eval_config_js, outfile)
 
 if __name__ == '__main__':
     from argparse import ArgumentParser
